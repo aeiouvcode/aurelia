@@ -1,0 +1,42 @@
+Aurelia - third-party material and provenance
+==============================================
+
+SCORES
+------
+All scores in scores/ were written for Aurelia as MusicXML. None were downloaded as
+MIDI, MusicXML or any other machine-readable file.
+
+- Lacrimosa (W. A. Mozart, completed by F. X. Süssmayr), Requiem K. 626. The composition
+  is public domain. The encoding was transcribed by hand, bar by bar, from a printed vocal
+  score (choir and organ reduction). The orchestral parts are an arrangement derived from
+  that reduction (violins from the right hand, viola and violin II from the left hand,
+  cello and bass from the pedal line, winds and trombones doubling the choir, trumpets and
+  timpani at the forte cadences). The encoding is released under CC0.
+- Ode to Joy (L. van Beethoven): public-domain theme. The arrangement and encoding were
+  written for Aurelia, CC0.
+- Prelude in C major BWV 846 (J. S. Bach): public-domain composition, written out for
+  Aurelia from memory. Bars 33-34 are close to the original but may differ in detail. CC0.
+
+SAMPLES (samples/)
+------------------
+- Strings, woodwinds, brass, timpani and organ: Versilian Studios, VSCO-2 Community
+  Edition, https://github.com/sgossner/VSCO-2-CE - Creative Commons Zero v1.0 Universal
+  (CC0-1.0). Trimmed, resampled to 32 kHz mono, loop points added and packed into one
+  MP3 per instrument for Aurelia.
+- Piano: Versilian Studios, Versilian Community Sample Library (VCSL), "Grand Piano,
+  Steinway B", https://github.com/sgossner/VCSL - CC0-1.0. Processed the same way.
+- Choir: no samples. The voices are synthesized in the browser (glottal-pulse source,
+  vowel formant filters, ensemble detune and vibrato). No choir sample set with clean
+  licensing could be verified, so none is bundled.
+
+ENGRAVING (lib/)
+----------------
+- Verovio 6.3.0, https://www.verovio.org, https://github.com/rism-digital/verovio -
+  GNU Lesser General Public License v3.0 or later. lib/verovio-toolkit-wasm.js is the
+  unmodified build from the "verovio" npm package. Its source is available at the
+  repository above. License texts: lib/VEROVIO-LGPL-3.0.txt and lib/VEROVIO-GPL-3.0.txt.
+  You may replace lib/verovio-toolkit-wasm.js with any compatible Verovio build.
+
+AURELIA CODE
+------------
+index.html, css/, js/ - written for this project.

@@ -1,20 +1,22 @@
 # Aurelia
 
-A sample-free browser orchestra with a live score and offline WAV rendering.
+A score-first orchestra for the browser. Aurelia reads a written score, engraves it, plays it with sampled instruments and a synthesized choir, lights up each note as it sounds, and renders the whole performance to a WAV file.
 
-![Aurelia performing Mozart's Lacrimosa](docs/screenshot.jpg)
+![Aurelia playing Mozart's Lacrimosa, with the choir's first notes highlighted](docs/screenshot.jpg)
 
 **Live:** https://aeiouvcode.github.io/aurelia/
 
-## About
+## How it works
 
-Aurelia synthesizes every voice in the page: strings, winds, brass, choir and room reflections. There is no MIDI playback and there are no recordings. Pick a bundled public-domain work (Mozart's Lacrimosa, Bach's Prelude in C, Beethoven's Ode to Joy), balance the sections, follow the notation as it plays, and render the full performance to a WAV file offline.
+- **The score comes first.** Every bundled piece is a MusicXML file written for Aurelia. Playback is driven by that score, not by MIDI files or recordings.
+- **Engraved view.** Verovio draws the notation in the page. Switch between a vocal score and the full score. The note being played is highlighted as the music moves.
+- **Real instruments.** Strings, winds, brass, timpani, organ and piano come from the CC0 Versilian Studios libraries, bundled in `samples/`.
+- **Synthesized choir.** There is no clean, openly licensed choir sample set, so the voices are built in the browser from a glottal source and vowel formants. It is the least realistic part of the sound.
+- **Mixer and export.** Balance each section, then download the full performance as a WAV, rendered offline on your device.
 
-Other music can be loaded as MusicXML or as Aurelia's compact JSON format. A title alone only works for the bundled pieces; Aurelia does not fetch or guess scores.
+Bundled pieces: Mozart's Lacrimosa (choir and orchestra), Beethoven's Ode to Joy, and Bach's Prelude in C. You can also open your own score as MusicXML (`.musicxml`, `.xml`, `.mxl`), MEI or ABC.
 
-## Built with
-
-Web Audio API synthesis and offline rendering, in a single `index.html`. No samples, no tracking, no network calls.
+Everything runs in the page. No accounts, no server, no tracking.
 
 ## Run locally
 
@@ -25,3 +27,7 @@ python3 -m http.server 8000
 ```
 
 Then open http://localhost:8000.
+
+## Credits
+
+Sources and licenses for the scores, samples and engraver are listed in [NOTICE.txt](NOTICE.txt). Verovio is LGPL-3.0-or-later; the samples are CC0.
