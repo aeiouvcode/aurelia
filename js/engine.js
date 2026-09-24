@@ -79,12 +79,15 @@ const Engine = (() => {
     if ('hj'.includes(c)) return {f:1500, q:.7, d:.06, g:.25};
     return null; // l, m, n, r, v, w: voiced onsets, handled by softer attack
   }
-  let glottalWave = null, noiseBuf = null;
-  function glottal(ctx) {
-    if (glottalWave && glottalWave.ctx === ctx) return glottalWave.w;
+  // Three glottal-source variants (different spectral tilts) so the section does not share one buzz.
+  const glottalWaves = new Map();
+  function glottal(ctx, v = 0) {
+    const key = ctx.sampleRate + ':' + v;
+    if (glottalWaves.has(key) && glottalWaves.get(key).ctx === ctx) return glottalWaves.get(key).w;
+    const tilt = [1.16, 1.26, 1.38][v] || 1.26;
     const n = 64, re = new Float32Array(n), im = new Float32Array(n);
-    for (let k = 1; k < n; k++) { im[k] = 1 / Math.pow(k, 1.25) * (k % 2 ? 1 : .85); }
-    const w = ctx.createPeriodicWave(re, im); glottalWave = {ctx, w}; return w;
+    for (let k = 1; k < n; k++) { im[k] = 1 / Math.pow(k, tilt) * (k % 2 ? 1 : .85); }
+    const w = ctx.createPeriodicWave(re, im); glottalWaves.set(key, {ctx, w}); return w;
   }
   function noise(ctx) {
     if (noiseBuf && noiseBuf.sampleRate === ctx.sampleRate) return noiseBuf;
@@ -92,25 +95,44 @@ const Engine = (() => {
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     return (noiseBuf = b);
   }
+  let noiseBuf = null;
   const rnd = (a, b) => a + Math.random() * (b - a);
+  // Vocal-tract sizes across a real section differ; three "tract groups" shift the whole
+  // formant pattern slightly, which is what makes many voices blur into a choir.
+  const TRACT = [{s:.94, d:-6}, {s:1, d:0}, {s:1.065, d:6}];
   function choirNote(ctx, out, n, t, dur, amp, singers) {
-    const part = n.choir, vw = n.vowel || 'a', [ff, db, bw] = F[part][vw];
+    const part = n.choir, vw = n.vowel || 'a', [ff0, db, bw] = F[part][vw];
+    const ff = ff0.slice();
     const f0 = 440 * Math.pow(2, (n.pitch - 69) / 12);
+    // sopranos/altos tune the first formant up toward a high fundamental
+    if ((part === 'S' || part === 'A') && f0 > ff[0] * .92) ff[0] = Math.min(f0 * 1.03, ff[0] + (f0 - ff[0]) * .82);
     const body = ctx.createGain(); body.gain.value = 0;
-    const bank = ctx.createGain(); bank.gain.value = 1;
-    // parallel formant filters
-    for (let k = 0; k < 5; k++) {
-      if (ff[k] > ctx.sampleRate / 2 - 500) continue;
-      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = ff[k]; bp.Q.value = ff[k] / (bw[k] * 1.6);
-      const g = ctx.createGain(); g.gain.value = Math.pow(10, db[k] / 20) * (k === 0 ? 1.4 : 2.2);
-      bank.connect(bp); bp.connect(g); g.connect(body);
-    }
-    // a little direct low-passed source keeps the chest warmth under the formants
-    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = Math.min(1400, f0 * 4); const lg = ctx.createGain(); lg.gain.value = .22;
-    bank.connect(lp); lp.connect(lg); lg.connect(body);
     body.connect(out);
-    const legato = n.legato ? .09 : .045;
-    const a = n.syl ? (onsetOf(n.syl) ? .06 : .11) : .07;
+    const banks = [];
+    for (let g = 0; g < 3; g++) {
+      const bankIn = ctx.createGain(); bankIn.gain.value = 1;
+      const gOut = ctx.createGain(); gOut.gain.value = 1 / Math.sqrt(3);
+      for (let k = 0; k < 5; k++) {
+        const fk = ff[k] * TRACT[g].s;
+        if (fk > ctx.sampleRate / 2 - 500) continue;
+        const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = fk; bp.Q.value = fk / (bw[k] * 1.6);
+        const gn = ctx.createGain(); gn.gain.value = Math.pow(10, (db[k] + rnd(-1.2, 1.2)) / 20) * (k === 0 ? 1.4 : 2.2);
+        bankIn.connect(bp); bp.connect(gn); gn.connect(gOut);
+      }
+      // a little direct low-passed source keeps the chest warmth under the formants
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = Math.min(1400, f0 * 4); const lg = ctx.createGain(); lg.gain.value = .22;
+      bankIn.connect(lp); lp.connect(lg); lg.connect(gOut);
+      // aspiration: air through the same formants, per tract
+      const nz = ctx.createBufferSource(); nz.buffer = noise(ctx); nz.loop = true;
+      const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 1500;
+      const ng = ctx.createGain(); ng.gain.value = .016;
+      nz.connect(hp); hp.connect(ng); ng.connect(bankIn);
+      nz.start(t, rnd(0, 1.5)); nz.stop(t + dur + .4);
+      gOut.connect(body);
+      banks.push(bankIn);
+    }
+    const legato = n.legato ? .1 : .05;
+    const a = n.syl ? (onsetOf(n.syl) ? .055 : .1) : .07;
     const end = t + dur + legato;
     const peak = amp * (part === 'S' ? .9 : part === 'B' ? 1.15 : 1);
     body.gain.setValueAtTime(0, t);
@@ -118,25 +140,35 @@ const Engine = (() => {
     body.gain.setTargetAtTime(peak * .88, t + a, .5);
     body.gain.setValueAtTime(peak * (dur > .8 ? .8 : .9), Math.max(t + a + .01, end - .12));
     body.gain.linearRampToValueAtTime(0, end + .08);
-    const stopAt = end + .15;
+    const stopAt = end + .2;
     for (let s = 0; s < singers; s++) {
-      const o = ctx.createOscillator(); o.setPeriodicWave(glottal(ctx));
-      o.frequency.value = f0; o.detune.value = rnd(-9, 9);
-      const vib = ctx.createOscillator(); vib.frequency.value = rnd(4.9, 5.9);
-      const vd = ctx.createGain(); vd.gain.setValueAtTime(0, t); vd.gain.linearRampToValueAtTime(rnd(14, 30), t + Math.min(dur, .45) + .15);
+      const g = s % 3;
+      const o = ctx.createOscillator(); o.setPeriodicWave(glottal(ctx, g));
+      o.frequency.value = f0;
+      // scoop up into the note, then hold with a small per-singer offset
+      const settle = TRACT[g].d + rnd(-9, 9);
+      o.detune.setValueAtTime(settle - rnd(14, 32), t);
+      o.detune.linearRampToValueAtTime(settle, t + Math.min(.2, .35 * dur));
+      // vibrato: own rate, own late onset, own depth
+      const vib = ctx.createOscillator(); vib.frequency.value = rnd(4.3, 6.1);
+      const vd = ctx.createGain();
+      const von = Math.min(t + dur - .05, t + rnd(.15, .7));
+      vd.gain.setValueAtTime(0, t); vd.gain.setValueAtTime(0, von);
+      vd.gain.linearRampToValueAtTime(rnd(15, 32), Math.min(t + dur + .1, von + .3));
       vib.connect(vd); vd.connect(o.detune);
+      // slow random-walk drift
       const dr = ctx.createOscillator(); dr.frequency.value = rnd(.15, .45); const dg = ctx.createGain(); dg.gain.value = rnd(3, 8); dr.connect(dg); dg.connect(o.detune);
-      const sg = ctx.createGain(); sg.gain.value = 1 / Math.sqrt(singers) * .5;
-      o.connect(sg); sg.connect(bank);
-      const st = t + rnd(0, .035);
-      o.start(st); vib.start(st); dr.start(st); o.stop(stopAt); vib.stop(stopAt); dr.stop(stopAt);
+      const sg = ctx.createGain(); const base = 1 / Math.sqrt(singers) * .55 * rnd(.78, 1.12);
+      sg.gain.value = base;
+      // slow loudness wobble, like breathing
+      const al = ctx.createOscillator(); al.frequency.value = rnd(.12, .38);
+      const alg = ctx.createGain(); alg.gain.value = base * .16; al.connect(alg); alg.connect(sg.gain);
+      o.connect(sg); sg.connect(banks[g]);
+      const st = t + rnd(0, Math.min(.09, dur * .3));
+      o.start(st); vib.start(st); dr.start(st); al.start(st);
+      const sp = stopAt + rnd(0, .06);
+      o.stop(sp); vib.stop(sp); dr.stop(sp); al.stop(sp);
     }
-    // breath
-    const nz = ctx.createBufferSource(); nz.buffer = noise(ctx); nz.loop = true;
-    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 1800;
-    const ng = ctx.createGain(); ng.gain.value = .018;
-    nz.connect(hp); hp.connect(ng); ng.connect(bank);
-    nz.start(t, rnd(0, 1.5)); nz.stop(stopAt);
     const on = onsetOf(n.syl);
     if (on) {
       const cz = ctx.createBufferSource(); cz.buffer = noise(ctx);
@@ -159,42 +191,50 @@ const Engine = (() => {
   function sampleNote(ctx, out, setName, pitch, t, dur, amp) {
     const set = cache[setName]; if (!set) return;
     const z = pickZone(set, pitch, amp); if (!z) return;
-    const rate = Math.pow(2, (pitch - z.pitch) / 12);
-    const src = ctx.createBufferSource(); src.buffer = set.buffer; src.playbackRate.value = rate;
     const norm = .16 / Math.max(.02, z.rms / z.gain * .95);
-    const g = ctx.createGain();
     const lvl = Math.min(2.5, norm) * amp * MIX[setName];
     const rel = REL[setName], att = ATT[setName];
-    let stopAt;
-    if (setName === 'timpani' || setName === 'piano') {
-      g.gain.setValueAtTime(lvl, t);
-      const ring = setName === 'piano' ? Math.max(dur, .85) : Math.min(z.len / rate, 2.6);
-      if (setName === 'piano') { g.gain.setValueAtTime(lvl, t + ring); g.gain.setTargetAtTime(0, t + ring, rel / 4); }
-      stopAt = Math.min(t + z.len / rate, t + ring + rel * 1.5 + .05);
-      src.start(t, z.start); src.stop(stopAt);
-    } else {
-      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(lvl, t + att);
-      const hold = t + Math.max(dur, att + .03);
-      g.gain.setValueAtTime(lvl, hold); g.gain.setTargetAtTime(0, hold, rel / 3.5);
-      stopAt = hold + rel * 1.6;
-      if (z.loop && dur + rel > z.loop[0] / rate * .95) {
-        src.loop = true; src.loopStart = z.start + z.loop[0]; src.loopEnd = z.start + z.loop[1];
-        src.start(t, z.start); src.stop(stopAt);
-      } else { src.start(t, z.start); src.stop(Math.min(stopAt, t + z.len / rate)); }
+    // a section, not a soloist: strings and winds get a couple of slightly detuned,
+    // slightly late desk-mates; timpani/piano/organ stay single.
+    const SECTION = {violins:3, violas:3, cellos:3, basses:2, flute:2, oboe:2, clarinet:2, bassoon:2, horn:2, trumpet:2, trombone:2};
+    const voices = SECTION[setName] || 1;
+    for (let v = 0; v < voices; v++) {
+      const rate = Math.pow(2, (pitch - z.pitch) / 12) * (v ? Math.pow(2, rnd(-6, 6) / 1200) : 1);
+      const vt = t + (v ? rnd(0, .022) : rnd(0, .008));
+      const vlvl = lvl * (v ? .55 : 1) / Math.sqrt(1 + (voices - 1) * .55 * .55); // power-matched: a section is as loud as the soloist, just wider
+      const src = ctx.createBufferSource(); src.buffer = set.buffer; src.playbackRate.value = rate;
+      const g = ctx.createGain();
+      let stopAt;
+      if (setName === 'timpani' || setName === 'piano') {
+        g.gain.setValueAtTime(vlvl, vt);
+        const ring = setName === 'piano' ? Math.max(dur, .85) : Math.min(z.len / rate, 2.6);
+        if (setName === 'piano') { g.gain.setValueAtTime(vlvl, vt + ring); g.gain.setTargetAtTime(0, vt + ring, rel / 4); }
+        stopAt = Math.min(vt + z.len / rate, vt + ring + rel * 1.5 + .05);
+        src.start(vt, z.start); src.stop(stopAt);
+      } else {
+        g.gain.setValueAtTime(0, vt); g.gain.linearRampToValueAtTime(vlvl, vt + att);
+        const hold = vt + Math.max(dur, att + .03);
+        g.gain.setValueAtTime(vlvl, hold); g.gain.setTargetAtTime(0, hold, rel / 3.5);
+        stopAt = hold + rel * 1.6;
+        if (z.loop && dur + rel > z.loop[0] / rate * .95) {
+          src.loop = true; src.loopStart = z.start + z.loop[0]; src.loopEnd = z.start + z.loop[1];
+          src.start(vt, z.start); src.stop(stopAt);
+        } else { src.start(vt, z.start); src.stop(Math.min(stopAt, vt + z.len / rate)); }
+      }
+      // darker when soft
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2200 + 9000 * Math.min(1, amp); lp.Q.value = .3;
+      src.connect(lp); lp.connect(g); g.connect(out);
     }
-    // darker when soft
-    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2200 + 9000 * Math.min(1, amp); lp.Q.value = .3;
-    src.connect(lp); lp.connect(g); g.connect(out);
   }
 
   // ---------- room ----------
-  function hallIR(ctx, secs = 3.0) {
+  function hallIR(ctx, secs = 3.6) {
     const sr = ctx.sampleRate, n = Math.floor(sr * secs), b = ctx.createBuffer(2, n, sr);
     for (let c = 0; c < 2; c++) {
       const d = b.getChannelData(c);
       let lp = 0;
       for (let i = 0; i < n; i++) {
-        const tt = i / sr, env = Math.exp(-tt * 2.3), k = .12 + .8 * Math.exp(-tt * 1.6);
+        const tt = i / sr, env = Math.exp(-tt * 1.9), k = .12 + .8 * Math.exp(-tt * 1.6);
         lp += k * ((Math.random() * 2 - 1) - lp);
         d[i] = lp * env * (tt < .012 ? tt / .012 : 1);
       }
@@ -208,15 +248,15 @@ const Engine = (() => {
     const tone = ctx.createBiquadFilter(); tone.type = 'highshelf'; tone.frequency.value = 3200; tone.gain.value = -4;
     master.connect(tone); tone.connect(comp); comp.connect(ctx.destination);
     const rev = ctx.createConvolver(); rev.buffer = hallIR(ctx);
-    const wet = ctx.createGain(); wet.gain.value = .5; rev.connect(wet); wet.connect(master);
+    const wet = ctx.createGain(); wet.gain.value = .55; rev.connect(wet); wet.connect(master);
     const buses = {};
     for (const p of parts) {
       const g = ctx.createGain(); g.gain.value = p.mute ? 0 : (p.level ?? 1);
       const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
       let head = g;
-      if (p.choir) { const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3600; lp.Q.value = .5; g.connect(lp); head = lp; }
+      if (p.choir) { const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 4300; lp.Q.value = .5; g.connect(lp); head = lp; }
       if (pan) { pan.pan.value = p.pan || 0; head.connect(pan); pan.connect(master); } else head.connect(master);
-      const send = ctx.createGain(); send.gain.value = p.choir ? .42 : .26; g.connect(send); send.connect(rev);
+      const send = ctx.createGain(); send.gain.value = p.choir ? .5 : .27; g.connect(send); send.connect(rev);
       buses[p.n] = g;
     }
     return {master, buses};
@@ -224,7 +264,7 @@ const Engine = (() => {
   function playEvent(ctx, graph, ev, t, singers) {
     const out = graph.buses[ev.staff]; if (!out) return;
     const p = ev.part;
-    if (p.choir) return choirNote(ctx, out, ev, t, ev.dur, ev.vel * .55, singers);
+    if (p.choir) return choirNote(ctx, out, ev, t, ev.dur, ev.vel * .63, singers);
     p.sets.forEach((s, i) => sampleNote(ctx, out, s, ev.pitch + ((p.oct && p.oct[i]) || 0), t, ev.dur, ev.vel * (i ? .8 : 1)));
   }
 
@@ -244,7 +284,7 @@ const Engine = (() => {
     const horizon = ctx.currentTime + .7;
     while (idx < events.length && t0 + events[idx].t < horizon) {
       const e = events[idx++]; const at = t0 + e.t;
-      if (at >= ctx.currentTime - .02) playEvent(ctx, graph, e, Math.max(at, ctx.currentTime), 3);
+      if (at >= ctx.currentTime - .02) playEvent(ctx, graph, e, Math.max(at, ctx.currentTime), 6);
     }
     if (now() > endT + 3.5) { const cb = onEnd; stop(); cb && cb(); }
   }
@@ -263,7 +303,7 @@ const Engine = (() => {
     const g = buildGraph(off, prts);
     // schedule in chunks with suspend() to keep memory/node count bounded
     const step = 8; let i = 0;
-    const scheduleUntil = (T) => { while (i < evts.length && evts[i].t < T) { const e = evts[i++]; playEvent(off, g, e, e.t + .1, 2); } };
+    const scheduleUntil = (T) => { while (i < evts.length && evts[i].t < T) { const e = evts[i++]; playEvent(off, g, e, e.t + .1, 12); } };
     scheduleUntil(step + 2);
     if (off.suspend) {
       for (let T = step; T < end + 2; T += step) {
