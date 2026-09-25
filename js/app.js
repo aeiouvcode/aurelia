@@ -3,11 +3,12 @@
 const $ = id => document.getElementById(id);
 const LIB = [
   {id:'lacrimosa', file:'scores/lacrimosa.musicxml', title:'Lacrimosa', by:'Mozart · Süssmayr', note:'Choir and orchestra · 30 bars · written for Aurelia'},
+  {id:'swan-lake', file:'scores/swan-lake.musicxml', title:'Swan Lake', by:'Tchaikovsky', note:'Act II Scene · orchestra reduction · theme section draft'},
   {id:'ode', file:'scores/ode-to-joy.musicxml', title:'Ode to Joy', by:'Beethoven', note:'Theme from the Ninth, arranged for winds and strings'},
   {id:'prelude', file:'scores/prelude-c.musicxml', title:'Prelude in C', by:'J. S. Bach', note:'BWV 846 · piano'}
 ];
 let tk = null, source = null, sourceKind = 'musicxml', partsXml = [], view = 'vocal';
-let events = [], parts = [], endSec = 0, dmap = [], dptr = 0, lit = new Set(), raf = 0, lastMeasure = null, seeking = false;
+let events = [], parts = [], endSec = 0, dmap = [], dptr = 0, lit = new Set(), raf = 0, lastMeasure = null, seeking = false, loadGen = 0;
 const status = (t, err) => { const s = $('status'); s.textContent = t || ''; s.classList.toggle('err', !!err); };
 const fmt = x => `${Math.floor(x / 60)}:${String(Math.floor(x % 60)).padStart(2, '0')}`;
 const isPhone = () => window.innerWidth < 720;
@@ -98,14 +99,16 @@ function extract() {
     while (tieNext[cur] && guard++ < 16) { cur = tieNext[cur]; const m2 = tk.getMIDIValuesForElement(cur); if (m2) dur = m2.time + m2.duration - mv.time; }
     const p = partOf[info.staff]; if (!p) return;
     const t = mv.time / 1000;
-    events.push({t, dur: Math.max(.05, dur / 1000), pitch: mv.pitch, staff: info.staff, part: p, syl: info.syl, choir: p.choir, vel: Math.min(1, levelAt(info.staff, t) * (.95 + Math.random() * .08))});
+    const h = [...id].reduce((a, c) => a * 31 + c.charCodeAt(0) | 0, 7), u = (h >>> 0) / 4294967296; // per-note hash: the same score parses to the same take
+    events.push({t, dur: Math.max(.05, dur / 1000), pitch: mv.pitch, staff: info.staff, part: p, syl: info.syl, choir: p.choir, vel: Math.min(1, levelAt(info.staff, t) * (.95 + u * .08))});
   }));
   events.sort((a, b) => a.t - b.t);
   // choir vowels + legato
   const prevV = {}, last = {};
   for (const e of events) if (e.choir) {
-    e.vowel = Engine.vowelOf(e.syl, prevV[e.staff]); prevV[e.staff] = e.vowel;
-    const l = last[e.staff]; if (l && Math.abs(l.t + l.dur - e.t) < .03) l.legato = true; last[e.staff] = e;
+    e.prevVowel = prevV[e.staff] || null;
+    e.vowel = Engine.vowelOf(e.syl, e.prevVowel); prevV[e.staff] = e.vowel;
+    const l = last[e.staff]; if (l && Math.abs(l.t + l.dur - e.t) < .03) { l.legato = true; e.fromVowel = l.vowel; } last[e.staff] = e;
   }
   endSec = events.reduce((m, e) => Math.max(m, e.t + e.dur), lastT / 1000);
 }
@@ -187,14 +190,18 @@ function tick() {
   syncHighlight(t * 1000, false);
   if (Engine.isPlaying()) raf = requestAnimationFrame(tick);
 }
-async function ensureSamples() {
+async function ensureSamples(gen) {
   const need = [...new Set(parts.flatMap(p => p.sets || []))];
   let done = 0;
-  for (const s of need) { status(`Tuning the ${s}… ${done}/${need.length}`); await Engine.loadSet(s); done++; }
+  for (const s of need) {
+    if (gen != null && gen !== loadGen) return; // a newer score load owns the status line now
+    status(`Tuning the ${s}… ${done}/${need.length}`); await Engine.loadSet(s); done++;
+  }
+  if (gen != null && gen !== loadGen) return;
   status('');
 }
 async function playFrom(t) {
-  await ensureSamples();
+  await ensureSamples(null);
   await Engine.play(events, parts, t, endSec);
   setPlayIcon(true); cancelAnimationFrame(raf); syncHighlight(t * 1000, true); tick();
 }
@@ -214,13 +221,14 @@ function seekTo(frac) {
 
 // ---------- loading ----------
 async function loadSource(data, kind, meta) {
-  Engine.stop(); setPlayIcon(false); cancelAnimationFrame(raf); resumeAt = 0;
+  Engine.stop(); setPlayIcon(false); cancelAnimationFrame(raf); resumeAt = 0; const gen = ++loadGen;
   source = data; sourceKind = kind;
   partsXml = kind === 'musicxml' ? listPartsXml(data) : [];
   const ok = data instanceof ArrayBuffer ? tk.loadZipDataBuffer(data) : tk.loadData(data);
   if (!ok) throw new Error('unreadable');
   tk.setOptions({scale: 40, breaks: 'none'});
   extract();
+  if (!events.length) { status('That score has no notes Aurelia can play.', true); source = null; return; }
   $('title').textContent = meta.title || 'Untitled score';
   $('by').textContent = meta.by || '';
   $('note').textContent = meta.note || `${parts.length} staves · ${events.length} notes`;
@@ -229,7 +237,7 @@ async function loadSource(data, kind, meta) {
   view = hasChoir ? 'vocal' : 'full'; markView();
   renderScore(); buildMixer();
   $('time').textContent = `0:00 / ${fmt(endSec)}`; $('seek').value = 0;
-  ensureSamples().catch(() => status('Some instruments could not load.', true));
+  ensureSamples(gen).catch(() => { if (gen === loadGen) status('Some instruments could not load.', true); });
 }
 async function loadLib(id) {
   const item = LIB.find(x => x.id === id) || LIB[0];
@@ -274,7 +282,7 @@ async function download() {
   btn.disabled = true;
   try {
     const wasPlaying = Engine.isPlaying(); if (wasPlaying) { resumeAt = Engine.now(); Engine.stop(); setPlayIcon(false); }
-    await ensureSamples();
+    await ensureSamples(null);
     const sr = isPhone() ? 32000 : 44100;
     status('Rendering the performance… 0%');
     const buf = await Engine.render(events, parts, endSec, sr, f => status(`Rendering the performance… ${Math.min(99, Math.round(f * 100))}%`));
